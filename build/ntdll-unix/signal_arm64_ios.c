@@ -5132,7 +5132,7 @@ static void *ios_mach_exception_thread( void *arg )
                         dprintf( STDERR_FILENO, "[watch] ml1201 cannot unprotect %p (wine prot %d) for the store at pc=%p errno=%d\n",
                                  (void *)ios_watch_page, watch_prot, (void *)(uintptr_t)fault_pc, errno );
                 }
-                /* PROPOSED, UNTESTED. Opt-in: env MADEIRA_IMAGE_STORE_RETRY=1.
+                /* PROPOSED, UNTESTED. On by default in this test branch; env MADEIRA_IMAGE_STORE_RETRY=0 turns it off.
                  *
                  * Peggle Deluxe (32-bit, PopCap popcapgame1.exe + BASS audio) hangs at
                  * startup with a black screen. bass.dll's last section (+0x40000, 0xEC8
@@ -5154,14 +5154,14 @@ static void *ios_mach_exception_thread( void *arg )
                  * the page. If the stored bytes are code FEX already translated, stale
                  * translations may run until FEX re-arms the page. The real fix is to make
                  * the SMC untrap (PAGE_EXECUTE_READWRITE after invalidation) fire for this
-                 * page. Default off. */
+                 * page. */
                 if (!rw_addr && (uintptr_t)fault_pc >= 0x100000000ULL)
                 {
                     static int retry_enabled = -1;
                     if (retry_enabled < 0)
                     {
                         const char *rs_env = getenv( "MADEIRA_IMAGE_STORE_RETRY" );
-                        retry_enabled = (rs_env && rs_env[0] == '1' && !rs_env[1]) ? 1 : 0;
+                        retry_enabled = (rs_env && rs_env[0] == '0' && !rs_env[1]) ? 0 : 1;
                     }
                     extern int ios_wow_addr_in_any_window_ext( const void *addr );
                     if (retry_enabled && ios_wow_addr_in_any_window_ext( (const void *)fault_addr ))
