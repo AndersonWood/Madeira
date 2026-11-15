@@ -5132,6 +5132,66 @@ static void *ios_mach_exception_thread( void *arg )
                         dprintf( STDERR_FILENO, "[watch] ml1201 cannot unprotect %p (wine prot %d) for the store at pc=%p errno=%d\n",
                                  (void *)ios_watch_page, watch_prot, (void *)(uintptr_t)fault_pc, errno );
                 }
+                /* PROPOSED, UNTESTED. Opt-in: env MADEIRA_IMAGE_STORE_RETRY=1.
+                 *
+                 * Peggle Deluxe (32-bit, PopCap popcapgame1.exe + BASS audio) hangs at
+                 * startup with a black screen. bass.dll's last section (+0x40000, 0xEC8
+                 * bytes) holds code that stores into its own page. The page is armed
+                 * read-only by the emulator's SMC trap (host prot=1, max=3) and has no
+                 * pool or anon alias, because a 32-bit image page is host data (ml1030).
+                 * The store is refused here ([store-noalias] + c0000005 "READ-ONLY FOR
+                 * WINDOWS TOO"), the main thread then waits on an SRW lock forever and the
+                 * game never presents a frame.
+                 *
+                 * Last resort for exactly that shape: the fault is inside a 32-bit guest
+                 * window, the host page is read-only but its max protection allows write
+                 * and never execute (so it is image data, not pool code). Make the host
+                 * page writable and let the store run again natively. This is the same
+                 * "leave the page writable, re-execute natively" move as the ml1201 watch
+                 * path above and the wx demotion below.
+                 *
+                 * KNOWN RISK: this does not tell FEX to invalidate translated blocks for
+                 * the page. If the stored bytes are code FEX already translated, stale
+                 * translations may run until FEX re-arms the page. The real fix is to make
+                 * the SMC untrap (PAGE_EXECUTE_READWRITE after invalidation) fire for this
+                 * page. Default off. */
+                if (!rw_addr && (uintptr_t)fault_pc >= 0x100000000ULL)
+                {
+                    static int retry_enabled = -1;
+                    if (retry_enabled < 0)
+                    {
+                        const char *rs_env = getenv( "MADEIRA_IMAGE_STORE_RETRY" );
+                        retry_enabled = (rs_env && rs_env[0] == '1' && !rs_env[1]) ? 1 : 0;
+                    }
+                    extern int ios_wow_addr_in_any_window_ext( const void *addr );
+                    if (retry_enabled && ios_wow_addr_in_any_window_ext( (const void *)fault_addr ))
+                    {
+                        mach_vm_address_t ra = (mach_vm_address_t)fault_addr;
+                        mach_vm_size_t rsz = 0;
+                        vm_region_basic_info_data_64_t rinfo;
+                        mach_msg_type_number_t rcnt = VM_REGION_BASIC_INFO_COUNT_64;
+                        mach_port_t robj = MACH_PORT_NULL;
+                        if (mach_vm_region( mach_task_self(), &ra, &rsz, VM_REGION_BASIC_INFO_64,
+                                            (vm_region_info_t)&rinfo, &rcnt, &robj ) == KERN_SUCCESS &&
+                            ra <= (mach_vm_address_t)fault_addr &&
+                            !(rinfo.protection & VM_PROT_WRITE) &&
+                            (rinfo.max_protection & VM_PROT_WRITE) &&
+                            !(rinfo.max_protection & VM_PROT_EXECUTE))
+                        {
+                            static unsigned retry_n;
+                            uintptr_t pg = (uintptr_t)fault_addr & ~(uintptr_t)0x3fff;
+                            if (mprotect( (void *)pg, 0x4000, PROT_READ | PROT_WRITE ) == 0)
+                            {
+                                if (retry_n++ < 16)
+                                    dprintf( STDERR_FILENO,
+                                        "[image-store-retry] #%u pc=0x%llx addr=0x%llx page 0x%llx made writable, store re-executes natively\n",
+                                        retry_n, (unsigned long long)fault_pc,
+                                        (unsigned long long)fault_addr, (unsigned long long)pg );
+                                handled = 1;
+                            }
+                        }
+                    }
+                }
                 /* ml348 DISCRIMINATOR: a write fault with NO alias is a
                  * different bug from a write fault whose instruction we can't
                  * decode, and the two need opposite fixes. Without this the
