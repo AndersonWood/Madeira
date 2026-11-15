@@ -1,0 +1,45 @@
+# Codemagic workflow for building Madeira.ipa from this fork.
+# UNTESTED. Start it from the Codemagic UI on the image-store-retry branch.
+#
+# The IPA is ad-hoc signed by tools/build/package-ipa.sh. Re-sign it with your
+# own identity (SideStore, AltStore, etc.) before installing.
+#
+# Known limit: a cold build takes several hours (LLVM and FEX compile from
+# source), and Codemagic caps a build at 120 minutes unless your team has an
+# Enterprise plan. Later builds reuse the cache paths below.
+
+workflows:
+  madeira-ipa:
+    name: Madeira IPA
+    instance_type: mac_mini_m4
+    max_build_duration: 120
+    environment:
+      xcode: edge
+    cache:
+      cache_paths:
+        - $CM_BUILD_DIR/toolchains
+        - $CM_BUILD_DIR/.runtime-cache
+        - $CM_BUILD_DIR/build/ffmpeg/obj
+        - $CM_BUILD_DIR/build/gnutls-ios/obj
+        - $CM_BUILD_DIR/build/freetype-ios/build
+        - $CM_BUILD_DIR/build/dxmt-ios/shader-headers
+        - $CM_BUILD_DIR/app/Madeira/i386-windows
+    scripts:
+      - name: Show toolchain
+        script: |
+          xcodebuild -version
+          xcrun --show-sdk-path --sdk iphoneos
+          sw_vers
+      - name: Install Rust (needed for the pairing library)
+        script: |
+          if ! command -v rustup >/dev/null; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          fi
+          . "$HOME/.cargo/env"
+          rustup --version
+      - name: Build Madeira.ipa
+        script: |
+          . "$HOME/.cargo/env"
+          ./tools/build-ipa.sh
+    artifacts:
+      - dist/Madeira.ipa
